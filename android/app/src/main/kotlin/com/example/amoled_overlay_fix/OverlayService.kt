@@ -88,10 +88,10 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         )
 
-        // Default Position (Center-ish)
+        // Default Position (Top-Left)
         params.gravity = Gravity.TOP or Gravity.LEFT
         params.x = 0
-        params.y = 100
+        params.y = 0
 
         // DRAG LISTENER
         overlayView?.setOnTouchListener(object : View.OnTouchListener {
@@ -110,8 +110,15 @@ class OverlayService : Service() {
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - initialTouchX).toInt()
-                        params.y = initialY + (event.rawY - initialTouchY).toInt()
+                        if (isVertical) {
+                            // Vertical Line: Move X only, Keep Y at 0 (Fullscreen)
+                            params.x = initialX + (event.rawX - initialTouchX).toInt()
+                            params.y = 0
+                        } else {
+                            // Horizontal Line: Move Y only, Keep X at 0 (Fullscreen)
+                            params.x = 0
+                            params.y = initialY + (event.rawY - initialTouchY).toInt()
+                        }
                         windowManager.updateViewLayout(overlayView, params)
                         return true
                     }
