@@ -27,23 +27,36 @@ class MainActivity: FlutterActivity() {
                     startActivityForResult(intent, 1234)
                     result.success(true)
                 }
-                "startOverlay" -> {
+                "syncLines" -> {
                     if (Settings.canDrawOverlays(this)) {
                         val intent = Intent(this, OverlayService::class.java)
+                        intent.action = "SYNC"
 
-                        // Pass data to service
-                        val thickness = call.argument<Int>("thickness") ?: 2
-                        val isVertical = call.argument<Boolean>("isVertical") ?: true
+                        // Pass data to service as a Serializable List of Maps or similar
+                        val linesList = call.argument<List<Map<String, Any>>>("lines")
 
-                        intent.putExtra("thickness", thickness)
-                        intent.putExtra("isVertical", isVertical)
+                        // We need to bundle this efficiently. ArrayList<Bundle> is one way.
+                        // Or just pass the raw list since it is serializable if it contains basic types.
+                        // However, putting List<Map> directly into Intent extras can be tricky.
+                        // Let's pack it into a basic Serializable structure or iterate.
+                        // Simplest for now: ArrayList of Bundles.
+
+                        val packedList = ArrayList<android.os.Bundle>()
+                        linesList?.forEach { map ->
+                            val b = android.os.Bundle()
+                            b.putInt("id", map["id"] as Int)
+                            b.putInt("thickness", map["thickness"] as Int)
+                            packedList.add(b)
+                        }
+
+                        intent.putParcelableArrayListExtra("lines_data", packedList)
 
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             startForegroundService(intent)
                         } else {
                             startService(intent)
                         }
-                        result.success("Overlay Started")
+                        result.success("Synced")
                     } else {
                         result.error("PERMISSION_DENIED", "Overlay permission not granted", null)
                     }

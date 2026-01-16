@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.os.Bundle
 import android.view.*
 import android.widget.FrameLayout
 import androidx.core.app.NotificationCompat
@@ -17,12 +18,12 @@ import androidx.core.app.NotificationCompat
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: View? = null
-    private lateinit var params: WindowManager.LayoutParams
 
-    // State
-    private var isVertical = true
-    private var thickness = 2
+    // Map of ID -> View
+    private val activeOverlays = mutableMapOf<Int, View>()
+    // Map of ID -> LayoutParams (to update position)
+    private val activeParams = mutableMapOf<Int, WindowManager.LayoutParams>()
+
     private var colorHex = 0xFF000000.toInt() // Pure Black
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -41,31 +42,53 @@ class OverlayService : Service() {
                 return START_NOT_STICKY
             }
 
-            // Update parameters from Flutter
-            if (intent.hasExtra("thickness")) {
-                thickness = intent.getIntExtra("thickness", 2)
+            if (action == "SYNC") {
+                val linesData = intent.getParcelableArrayListExtra<Bundle>("lines_data")
+                if (linesData != null) {
+                    syncLines(linesData)
+                }
             }
-            if (intent.hasExtra("isVertical")) {
-                isVertical = intent.getBooleanExtra("isVertical", true)
-            }
-
-            // If view exists, update or remove it to redraw
-            if (overlayView != null) {
-                windowManager.removeView(overlayView)
-                overlayView = null // Force recreate
-            }
-            showOverlay()
         }
         return START_STICKY
     }
 
-    private fun showOverlay() {
-        // Create the view (Just a colored Box)
-        overlayView = FrameLayout(this).apply {
-            setBackgroundColor(colorHex)
+    private fun syncLines(linesData: ArrayList<Bundle>) {
+        val receivedIds = mutableSetOf<Int>()
 
-            // Add a subtle border/handle so user knows they can grab it (optional)
-            // setForeground(resources.getDrawable(R.drawable.border, null))
+        for (bundle in linesData) {
+            val id = bundle.getInt("id")
+            val thickness = bundle.getInt("thickness")
+            receivedIds.add(id)
+
+            if (activeOverlays.containsKey(id)) {
+                // Update existing
+                updateLine(id, thickness)
+            } else {
+                // Create new
+                createLine(id, thickness)
+            }
+        }
+
+        // Remove lines that are no longer in the list
+        val iterator = activeOverlays.keys.iterator()
+        while (iterator.hasNext()) {
+            val existingId = iterator.next()
+            if (!receivedIds.contains(existingId)) {
+                // Remove view
+                val view = activeOverlays[existingId]
+                if (view != null) {
+                    windowManager.removeView(view)
+                }
+                activeParams.remove(existingId)
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun createLine(id: Int, thickness: Int) {
+        // Create the view (Just a colored Box)
+        val overlayView = FrameLayout(this).apply {
+            setBackgroundColor(colorHex)
         }
 
         // Layout Params
@@ -75,10 +98,11 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val width = if (isVertical) thickness else WindowManager.LayoutParams.MATCH_PARENT
-        val height = if (isVertical) WindowManager.LayoutParams.MATCH_PARENT else thickness
+        // Vertical only as per request
+        val width = thickness
+        val height = WindowManager.LayoutParams.MATCH_PARENT
 
-        params = WindowManager.LayoutParams(
+        val params = WindowManager.LayoutParams(
             width,
             height,
             layoutFlag,
@@ -88,37 +112,26 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         )
 
-        // Default Position (Top-Left)
+        // Default Position (Center-ish horizontally, full vertical)
         params.gravity = Gravity.TOP or Gravity.LEFT
-        params.x = 0
+        params.x = 100 // Default offset so they don't all stack exactly on 0
         params.y = 0
 
         // DRAG LISTENER
-        overlayView?.setOnTouchListener(object : View.OnTouchListener {
+        overlayView.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
-            private var initialY = 0
             private var initialTouchX = 0f
-            private var initialTouchY = 0f
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = params.x
-                        initialY = params.y
                         initialTouchX = event.rawX
-                        initialTouchY = event.rawY
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (isVertical) {
-                            // Vertical Line: Move X only, Keep Y at 0 (Fullscreen)
-                            params.x = initialX + (event.rawX - initialTouchX).toInt()
-                            params.y = 0
-                        } else {
-                            // Horizontal Line: Move Y only, Keep X at 0 (Fullscreen)
-                            params.x = 0
-                            params.y = initialY + (event.rawY - initialTouchY).toInt()
-                        }
+                        // Vertical Line: Move X only
+                        params.x = initialX + (event.rawX - initialTouchX).toInt()
                         windowManager.updateViewLayout(overlayView, params)
                         return true
                     }
@@ -128,14 +141,30 @@ class OverlayService : Service() {
         })
 
         windowManager.addView(overlayView, params)
+        activeOverlays[id] = overlayView
+        activeParams[id] = params
+    }
+
+    private fun updateLine(id: Int, thickness: Int) {
+        val params = activeParams[id]
+        val view = activeOverlays[id]
+
+        if (params != null && view != null) {
+            if (params.width != thickness) {
+                params.width = thickness
+                windowManager.updateViewLayout(view, params)
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (overlayView != null) {
-            windowManager.removeView(overlayView)
-            overlayView = null
+        // Remove all views
+        for (view in activeOverlays.values) {
+            windowManager.removeView(view)
         }
+        activeOverlays.clear()
+        activeParams.clear()
     }
 
     // Boilerplate for Foreground Service (Required for Android 14+)
@@ -150,7 +179,7 @@ class OverlayService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("AMOLED Fix Running")
-            .setContentText("Tap to configure")
+            .setContentText("Lines active. Tap to configure.")
             .setSmallIcon(android.R.drawable.ic_menu_edit)
             .build()
 
